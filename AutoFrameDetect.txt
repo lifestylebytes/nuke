@@ -1,0 +1,144 @@
+
+#------------------------------------
+# Auto Frame Detect v.1.0.3
+# Gabrielle Garam You, 2023
+# Select the top values of the largest sums - variable
+# Create framehold automatically
+# Made it as a gizmo (UI)
+
+import cv2
+import numpy as np
+import nuke
+
+def detect_motion(previous_frame, current_frame, threshold=30):
+    # Calculate the absolute difference between frames
+    frame_diff = cv2.absdiff(previous_frame, current_frame)
+
+    # Apply thresholding to highlight significant differences
+    _, thresholded_diff = cv2.threshold(frame_diff, threshold, 255, cv2.THRESH_BINARY)
+
+    # Apply morphological operations to remove noise
+    kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (5, 5))
+    opened_diff = cv2.morphologyEx(thresholded_diff, cv2.MORPH_OPEN, kernel)
+
+    # Find contours of moving objects
+    contours, _ = cv2.findContours(opened_diff, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+
+    # Get bounding rectangles for the contours
+    bounding_rects = [cv2.boundingRect(contour) for contour in contours]
+
+    return bounding_rects
+
+# Function to process each frame
+def process_frame(frame):
+    global previous_frame
+
+    current_frame_gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+
+    if previous_frame is None:
+        previous_frame = current_frame_gray
+        return frame
+
+    motion_regions = detect_motion(previous_frame, current_frame_gray, threshold=30)
+
+    for region in motion_regions:
+        x, y, w, h = region
+        cv2.rectangle(frame, (x, y), (x + w, y + h), (0, 255, 0), 2)
+
+    # Add text overlay
+    text = "Frame: {}".format(int(frame_number))
+    cv2.putText(frame, text, (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 1, (255, 255, 255), 2, cv2.LINE_AA)
+
+    previous_frame = current_frame_gray
+
+    return frame
+
+# Get the selected node
+n = nuke.selectedNode()
+
+# Get the file path from the selected node
+video_path = n['file'].getValue()
+
+# Create a VideoCapture object
+cap = cv2.VideoCapture(video_path)
+
+# Check if the video capture is successful
+if not cap.isOpened():
+    print("Error opening video file")
+
+# Get the total number of frames in the video
+total_frames = int(nuke.selectedNode().knob('last').value())
+
+# Global variable to store the previous frame
+previous_frame = None
+
+# Initialize variables for tracking the sum of regions for each frame
+frame_sums = []
+
+# Process frames
+for frame_number in range(total_frames):
+    ret, frame = cap.read()
+
+    if not ret:
+        print("Error reading frame")
+        break
+
+    processed_frame = process_frame(frame)
+
+    # Calculate the sum of regions for the current frame
+    motion_regions = detect_motion(previous_frame, cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY), threshold=30)
+    frame_sum = sum([w * h for _, _, w, h in motion_regions])
+
+    # Add the frame sum to the list
+    frame_sums.append(frame_sum)
+
+    # Show the frame in a window
+    cv2.imshow('Processed Frame', processed_frame)
+
+    # Check if a key has been pressed
+    key = cv2.waitKey(1) & 0xFF
+    if key == ord('q'):
+        break
+
+    previous_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+
+# Release resources and close the windows
+cap.release()
+cv2.destroyAllWindows()
+
+# Print the frame messages in descending order based on the sum
+
+count = 2
+#int(nuke.thisNode().knob('count').value())
+
+# Get the position of the Read node
+read_node_x = n.xpos()
+read_node_y = n.ypos()
+
+# Print the frame messages in descending order based on the sum
+
+indices = np.argsort(frame_sums)[-count:][::-1]
+for i, index in enumerate(indices):
+    frame_sum = frame_sums[index]
+    print("Frame {} - Sum: {}".format(index, frame_sum))
+
+    # Create a new FrameHold node
+    framehold_node = nuke.createNode('FrameHold')
+
+    # Set the frame_sum as the value of the firstFrame knob
+    framehold_node['first_frame'].setValue(index)
+
+    # Add a label to the node displaying the frame_sum
+    framehold_node['label'].setValue("Sum: {}".format(frame_sum))
+
+    # Position the node below the Read node and spread them to the left and right
+
+    offset_x = 100
+    offset_y = 100
+    node_x = read_node_x - (offset_x * (count - 1)) // 2 + offset_x * i
+    node_y = read_node_y + 150
+    framehold_node.setXpos(node_x)
+    framehold_node.setYpos(node_y)
+
+    # Connect the FrameHold node to the Read node
+    framehold_node.setInput(0, n)
